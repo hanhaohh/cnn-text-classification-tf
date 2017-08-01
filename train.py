@@ -125,7 +125,7 @@ with tf.Graph().as_default():
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
 
-        builder = tf.saved_model.builder.SavedModelBuilder("runs/1")
+        builder = tf.saved_model.builder.SavedModelBuilder("runs/4")
 
         # saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
 
@@ -195,7 +195,6 @@ with tf.Graph().as_default():
                 print("")
 
 
-
             if current_step % FLAGS.checkpoint_every == 0:
                 # path = saver.save(sess, checkpoint_prefix, global_step=current_step)
                 # print("Saved model checkpoint to {}\n".format(path))
@@ -204,32 +203,38 @@ with tf.Graph().as_default():
                 # Set up the signature for Predict with input and output tensor
                 # specification.
                 predict_input_tensor = tf.saved_model.utils.build_tensor_info(cnn.input_x)
-                predict_signature_inputs = {"x": predict_input_tensor}
+                dropout_rate_tensor = tf.saved_model.utils.build_tensor_info(cnn.dropout_keep_prob)
+                predict_output_tensor = tf.saved_model.utils.build_tensor_info(cnn.logits)
 
-                predict_output_tensor = tf.saved_model.utils.build_tensor_info(cnn.scores)
-                predict_signature_outputs = {"y": predict_output_tensor}
+                predict_signature_inputs = {
+                    tf.saved_model.signature_constants.CLASSIFY_INPUTS: predict_input_tensor,
+                    "dropout_rate": dropout_rate_tensor,
+                }
+                
+
+                predict_signature_outputs = {
+                    tf.saved_model.signature_constants.CLASSIFY_OUTPUT_SCORES:
+                    predict_output_tensor
+                }
                 
                 prediction_signature = (
-                    tf.saved_model.signature_def_utils.build_signature_def
-                    (
-                        predict_signature_inputs,
-                        predict_signature_outputs,
+                    tf.saved_model.signature_def_utils.build_signature_def(
+                        inputs=predict_signature_inputs,
+                        outputs=predict_signature_outputs,
                         method_name=tf.saved_model.signature_constants.PREDICT_METHOD_NAME
                     )
                 )
-                signature_def_map = {
-                    "sentiment_prediction":prediction_signature
-                }
+
                 # Initialize all variables and then save the SavedModel.
                 sess.run(tf.global_variables_initializer())
                 legacy_init_op = tf.group(tf.tables_initializer(), name='legacy_init_op')
                 
                 builder.add_meta_graph_and_variables(
                     sess, [tf.saved_model.tag_constants.SERVING],
-                    signature_def_map=signature_def_map,
+                    signature_def_map={
+                        "sentiment_prediction": prediction_signature},
                     legacy_init_op=legacy_init_op
                 )
                 
-
                 builder.save()
 

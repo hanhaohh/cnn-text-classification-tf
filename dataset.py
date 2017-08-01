@@ -79,4 +79,3 @@ class SentimentDataSet(object):
                     break
                 word_ids[idx] = self.vocabulary_.get(token, 0)
             yield word_ids
- 
