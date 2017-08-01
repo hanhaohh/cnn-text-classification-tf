@@ -10,7 +10,7 @@ from text_cnn import TextCNN
 from tensorflow.contrib import learn
 import yaml
 import math
-
+from dataset import SentimentDataSet
 # Parameters
 # ==================================================
 
@@ -29,7 +29,7 @@ tf.flags.DEFINE_float("l2_reg_lambda", 0.0, "L2 regularization lambda (default: 
 tf.flags.DEFINE_integer("batch_size", 64, "Batch Size (default: 64)")
 tf.flags.DEFINE_integer("num_epochs", 200, "Number of training epochs (default: 200)")
 tf.flags.DEFINE_integer("evaluate_every", 100, "Evaluate model on dev set after this many steps (default: 100)")
-tf.flags.DEFINE_integer("checkpoint_every", 100, "Save model after this many steps (default: 100)")
+tf.flags.DEFINE_integer("checkpoint_every", 10, "Save model after this many steps (default: 100)")
 tf.flags.DEFINE_integer("num_checkpoints", 5, "Number of checkpoints to store (default: 5)")
 # Misc Parameters
 tf.flags.DEFINE_boolean("allow_soft_placement", True, "Allow device soft device placement")
@@ -56,43 +56,15 @@ else:
 # Data Preparation
 # ==================================================
 
-# Load data
+# Load data and Build vocabulary
 print("Loading data...")
-datasets = None
-if dataset_name == "mrpolarity":
-    datasets = data_helpers.get_datasets_mrpolarity(cfg["datasets"][dataset_name]["positive_data_file"]["path"],
-                                                    cfg["datasets"][dataset_name]["negative_data_file"]["path"])
-elif dataset_name == "20newsgroup":
-    datasets = data_helpers.get_datasets_20newsgroup(subset="train",
-                                                     categories=cfg["datasets"][dataset_name]["categories"],
-                                                     shuffle=cfg["datasets"][dataset_name]["shuffle"],
-                                                     random_state=cfg["datasets"][dataset_name]["random_state"])
-elif dataset_name == "localdata":
-    datasets = data_helpers.get_datasets_localdata(container_path=cfg["datasets"][dataset_name]["container_path"],
-                                                     categories=cfg["datasets"][dataset_name]["categories"],
-                                                     shuffle=cfg["datasets"][dataset_name]["shuffle"],
-                                                     random_state=cfg["datasets"][dataset_name]["random_state"])
-x_text, y = data_helpers.load_data_labels(datasets)
-
-# Build vocabulary
-max_document_length = max([len(x.split(" ")) for x in x_text])
-vocab_processor = learn.preprocessing.VocabularyProcessor(max_document_length)
-x = np.array(list(vocab_processor.fit_transform(x_text)))
-
-# Randomly shuffle data
-np.random.seed(10)
-shuffle_indices = np.random.permutation(np.arange(len(y)))
-x_shuffled = x[shuffle_indices]
-y_shuffled = y[shuffle_indices]
-
-# Split train/test set
-# TODO: This is very crude, should use cross-validation
-dev_sample_index = -1 * int(FLAGS.dev_sample_percentage * float(len(y)))
-x_train, x_dev = x_shuffled[:dev_sample_index], x_shuffled[dev_sample_index:]
-y_train, y_dev = y_shuffled[:dev_sample_index], y_shuffled[dev_sample_index:]
-print("Vocabulary Size: {:d}".format(len(vocab_processor.vocabulary_)))
-print("Train/Dev split: {:d}/{:d}".format(len(y_train), len(y_dev)))
-
+data_preparation = SentimentDataSet("sp_818980_rd", 80)
+train, test = data_preparation.import_data()
+x_train = train[0]
+y_train = train[1]
+x_dev = test[0][:1000]
+y_dev = test[1][:1000]
+word2vec_matrix = SentimentDataSet.vector_matrix
 
 # Training
 # ==================================================
@@ -104,10 +76,10 @@ with tf.Graph().as_default():
     sess = tf.Session(config=session_conf)
     with sess.as_default():
         cnn = TextCNN(
-            sequence_length=x_train.shape[1],
-            num_classes=y_train.shape[1],
-            vocab_size=len(vocab_processor.vocabulary_),
-            embedding_size=embedding_dimension,
+            sequence_length=80,
+            num_classes=2,
+            vocab_size=len(word2vec_matrix),
+            embedding_size=200,
             filter_sizes=list(map(int, FLAGS.filter_sizes.split(","))),
             num_filters=FLAGS.num_filters,
             l2_reg_lambda=FLAGS.l2_reg_lambda)
@@ -152,30 +124,19 @@ with tf.Graph().as_default():
         checkpoint_prefix = os.path.join(checkpoint_dir, "model")
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
-        saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
 
-        # Write vocabulary
-        vocab_processor.save(os.path.join(out_dir, "vocab"))
+        builder = tf.saved_model.builder.SavedModelBuilder("runs/1")
+
+        # saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
 
         # Initialize all variables
         sess.run(tf.global_variables_initializer())
         if FLAGS.enable_word_embeddings and cfg['word_embeddings']['default'] is not None:
-            vocabulary = vocab_processor.vocabulary_
             initW = None
-            if embedding_name == 'word2vec':
-                # load embedding vectors from the word2vec
-                print("Load word2vec file {}".format(cfg['word_embeddings']['word2vec']['path']))
-                initW = data_helpers.load_embedding_vectors_word2vec(vocabulary,
-                                                                     cfg['word_embeddings']['word2vec']['path'],
-                                                                     cfg['word_embeddings']['word2vec']['binary'])
-                print("word2vec file has been loaded")
-            elif embedding_name == 'glove':
-                # load embedding vectors from the glove
-                print("Load glove file {}".format(cfg['word_embeddings']['glove']['path']))
-                initW = data_helpers.load_embedding_vectors_glove(vocabulary,
-                                                                  cfg['word_embeddings']['glove']['path'],
-                                                                  embedding_dimension)
-                print("glove file has been loaded\n")
+            # load embedding vectors from the word2vec
+            print("Load word2vec file {}".format(cfg['word_embeddings']['word2vec']['path']))
+            initW = SentimentDataSet.vector_matrix
+            print("word2vec file has been loaded")
             sess.run(cnn.W.assign(initW))
 
         def train_step(x_batch, y_batch, learning_rate):
@@ -232,6 +193,43 @@ with tf.Graph().as_default():
                 print("\nEvaluation:")
                 dev_step(x_dev, y_dev, writer=dev_summary_writer)
                 print("")
+
+
+
             if current_step % FLAGS.checkpoint_every == 0:
-                path = saver.save(sess, checkpoint_prefix, global_step=current_step)
-                print("Saved model checkpoint to {}\n".format(path))
+                # path = saver.save(sess, checkpoint_prefix, global_step=current_step)
+                # print("Saved model checkpoint to {}\n".format(path))
+
+                # SavedModel.
+                # Set up the signature for Predict with input and output tensor
+                # specification.
+                predict_input_tensor = tf.saved_model.utils.build_tensor_info(cnn.input_x)
+                predict_signature_inputs = {"x": predict_input_tensor}
+
+                predict_output_tensor = tf.saved_model.utils.build_tensor_info(cnn.scores)
+                predict_signature_outputs = {"y": predict_output_tensor}
+                
+                prediction_signature = (
+                    tf.saved_model.signature_def_utils.build_signature_def
+                    (
+                        predict_signature_inputs,
+                        predict_signature_outputs,
+                        method_name=tf.saved_model.signature_constants.PREDICT_METHOD_NAME
+                    )
+                )
+                signature_def_map = {
+                    "sentiment_prediction":prediction_signature
+                }
+                # Initialize all variables and then save the SavedModel.
+                sess.run(tf.global_variables_initializer())
+                legacy_init_op = tf.group(tf.tables_initializer(), name='legacy_init_op')
+                
+                builder.add_meta_graph_and_variables(
+                    sess, [tf.saved_model.tag_constants.SERVING],
+                    signature_def_map=signature_def_map,
+                    legacy_init_op=legacy_init_op
+                )
+                
+
+                builder.save()
+
